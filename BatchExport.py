@@ -1,5 +1,6 @@
 import bpy
 import os
+import traceback
 
 bl_info = {
     "name": "Batch Export FBX",
@@ -14,7 +15,14 @@ bl_info = {
 }
 
 def get_export_directories_file_path():
-    return os.path.join(bpy.utils.user_resource('SCRIPTS'), "export_directories.txt")
+    scripts_dir = bpy.utils.user_resource('SCRIPTS')
+    if not os.path.exists(scripts_dir):
+        try:
+            os.makedirs(scripts_dir)
+        except Exception as e:
+            print(f"无法创建SCRIPTS目录: {e}")
+            return None
+    return os.path.join(scripts_dir, "export_directories.txt")
 
 def select_only(obj, selected_objects):
     for other_obj in selected_objects:
@@ -23,8 +31,19 @@ def select_only(obj, selected_objects):
     bpy.context.view_layer.objects.active = obj
 
 def export_fbx(obj, directory):
+    if not os.path.exists(directory):
+        try:
+            os.makedirs(directory)
+        except Exception as e:
+            print(f"无法创建导出目录: {e}")
+            return False
     fbx_path = os.path.join(directory, obj.name + ".fbx")
-    bpy.ops.export_scene.fbx(filepath=fbx_path, use_selection=True, axis_forward='-Z', axis_up='Y')
+    try:
+        bpy.ops.export_scene.fbx(filepath=fbx_path, use_selection=True, axis_forward='-Z', axis_up='Y')
+        return True
+    except Exception as e:
+        print(f"导出FBX失败: {e}\n{traceback.format_exc()}")
+        return False
 
 class BatchExportFBXOperator(bpy.types.Operator):
     bl_idname = "export.batch_fbx"
@@ -35,32 +54,38 @@ class BatchExportFBXOperator(bpy.types.Operator):
     def execute(self, context):
         scene = context.scene
         selected_objects = bpy.context.selected_objects
-        
+        if not selected_objects:
+            self.report({'ERROR'}, "没有选中任何对象！")
+            return {'CANCELLED'}
         original_locations = {obj: obj.location.copy() for obj in selected_objects}
         original_parents = {obj: obj.parent for obj in selected_objects}
-        
         for obj in selected_objects:
             obj.location = (0, 0, 0)
             select_only(obj, selected_objects)
-            export_fbx(obj, scene.manual_directory)
+            success = export_fbx(obj, scene.manual_directory)
             obj.location = original_locations[obj]
-            obj.parent = original_parents[obj]
-
+            try:
+                obj.parent = original_parents[obj]
+            except Exception as e:
+                print(f"恢复父子关系失败: {e}")
+            if not success:
+                self.report({'WARNING'}, f"导出 {obj.name} 失败")
         for obj in selected_objects:
             obj.select_set(True)
-
         file_path = get_export_directories_file_path()
-        if not os.path.exists(file_path) or scene.manual_directory not in open(file_path).read():
-            with open(file_path, 'a') as file:
-                file.write(scene.manual_directory + '\n')
-            update_enum(None, bpy.context)
-
-        self.report({'INFO'}, "Batch export complete")
+        if file_path and (not os.path.exists(file_path) or scene.manual_directory not in open(file_path).read()):
+            try:
+                with open(file_path, 'a') as file:
+                    file.write(scene.manual_directory + '\n')
+                update_enum(None, bpy.context)
+            except Exception as e:
+                print(f"写入导出目录文件失败: {e}")
+        self.report({'INFO'}, "批量导出完成")
         return {'FINISHED'}
 
 def update_enum(self, context):
     file_path = get_export_directories_file_path()
-    if os.path.exists(file_path):
+    if file_path and os.path.exists(file_path):
         with open(file_path, 'r') as file:
             items = [(line.strip(), line.strip(), '') for line in file]
         bpy.types.Scene.text_file_enum = bpy.props.EnumProperty(items=items, update=update_manual_directory)
